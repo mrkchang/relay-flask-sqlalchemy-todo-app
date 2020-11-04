@@ -156,7 +156,7 @@ class ChangeTodoStatus(relay.ClientIDMutation):
         todo.complete = complete
         db_session.commit()
         mutation = ChangeTodoStatus(todo=todo, viewer=viewer)
-        pubsub.publish('CHANGE_TODO_STATUS', (id, mutation))
+        pubsub.publish('CHANGE_TODO_STATUS', (id, {'todo': todo.__json__(), 'viewer': viewer.__json__()}))
         pubsub.publish('INSERT_TODO', mutation)  # we might need to insert into some views
         return mutation
 
@@ -340,14 +340,14 @@ class ChangeTodoStatusSubscription(relay_helper.ClientIDSubscription):
         return trigger_id == subscription_id
 
     @classmethod
-    def get_payload_from_mutation(cls, mutation):
-        return ChangeTodoStatusSubscription(todo=mutation.todo, viewer=mutation.viewer)
+    def get_payload_from_message(cls, message):
+        return ChangeTodoStatusSubscription(todo=TodoModel.query.get(message['todo']['id']), viewer=UserModel.query.get(message['viewer']['id']))
 
     @classmethod
     def subscribe_and_get_payload(cls, root, info, **input):
         return pubsub.subscribe_to_channel('CHANGE_TODO_STATUS')\
-            .filter(lambda id_and_mutation: cls.filter_by_id(id_and_mutation[0], input.get('id')))\
-            .map(lambda id_and_mutation: cls.get_payload_from_mutation(id_and_mutation[1]))
+            .filter(lambda id_and_message: cls.filter_by_id(id_and_message[0], input.get('id')))\
+            .map(lambda id_and_message: cls.get_payload_from_message(id_and_message[1]))
 
 
 class InsertTodoSubscription(relay_helper.ClientIDSubscription):
