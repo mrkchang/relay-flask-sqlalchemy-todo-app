@@ -122,8 +122,9 @@ class AddTodo(relay.ClientIDMutation):
             node=todo,
             cursor=graphql_relay.connection.arrayconnection.cursor_for_object_in_connection(viewer.todos.all(), todo),
         )
+        message = {'todo': todo.__json__(), 'viewer': viewer.__json__(), 'cursor': edge.cursor}
+        pubsub.publish('ADD_TODO', message)
         mutation = AddTodo(todo_edge=edge, viewer=viewer)
-        pubsub.publish('ADD_TODO', mutation)
         return mutation
 
 
@@ -155,9 +156,10 @@ class ChangeTodoStatus(relay.ClientIDMutation):
             raise Exception("received invalid Todo id '{}'".format(id))
         todo.complete = complete
         db_session.commit()
+        message = {'todo': todo.__json__(), 'viewer': viewer.__json__()}
+        pubsub.publish('CHANGE_TODO_STATUS', (id, message))
+        pubsub.publish('INSERT_TODO', message)  # we might need to insert into some views
         mutation = ChangeTodoStatus(todo=todo, viewer=viewer)
-        pubsub.publish('CHANGE_TODO_STATUS', (id, {'todo': todo.__json__(), 'viewer': viewer.__json__()}))
-        pubsub.publish('INSERT_TODO', mutation)  # we might need to insert into some views
         return mutation
 
 
@@ -187,9 +189,9 @@ class MarkAllTodos(relay.ClientIDMutation):
         # emit updates to subscriptions
         for todo in changed:
             id = graphql_relay.to_global_id('Todo', todo.id)
-            mutation = ChangeTodoStatus(todo=todo, viewer=viewer)
-            pubsub.publish('CHANGE_TODO_STATUS', (id, mutation))
-            pubsub.publish('INSERT_TODO', mutation)  # we might need to insert into some views
+            message = {'todo': todo.__json__(), 'viewer': viewer.__json__()}
+            pubsub.publish('CHANGE_TODO_STATUS', (id, message))
+            pubsub.publish('INSERT_TODO', message)  # we might need to insert into some views
         return MarkAllTodos(changed_todos=changed, viewer=viewer)
 
 
@@ -218,8 +220,8 @@ class RemoveCompletedTodos(relay.ClientIDMutation):
         db_session.commit()
         # emit updates to subscriptions
         for id in deleted:
-            mutation = RemoveTodo(deleted_todo_id=id, viewer=viewer)
-            pubsub.publish('REMOVE_TODO', mutation)
+            message = {'deleted_todo_id': id, 'viewer': viewer.__json__()}
+            pubsub.publish('REMOVE_TODO', message)
         return RemoveCompletedTodos(deleted_todo_ids=deleted, viewer=viewer)
 
 
@@ -250,8 +252,9 @@ class RemoveTodo(relay.ClientIDMutation):
         db_session.commit()
         if count == 0:
             id = None
+        message = {'deleted_todo_id': id, 'viewer': viewer.__json__()}
+        pubsub.publish('REMOVE_TODO', message)
         mutation = RemoveTodo(deleted_todo_id=id, viewer=viewer)
-        pubsub.publish('REMOVE_TODO', mutation)
         return mutation
 
 
@@ -280,8 +283,9 @@ class RenameTodo(relay.ClientIDMutation):
             raise Exception("received invalid Todo id '{}'".format(id))
         todo.text = text
         db_session.commit()
+        message = {'todo': todo.__json__()}
+        pubsub.publish('RENAME_TODO', message)
         mutation = RenameTodo(todo=todo)
-        pubsub.publish('RENAME_TODO', mutation)
         return mutation
 
 
@@ -302,29 +306,35 @@ class AddTodoSubscription(relay_helper.ClientIDSubscription):
         status = graphene.String(required=True)
 
     @classmethod
-    def filter_by_status(cls, mutation, status):
+    def filter_by_status(cls, message, status):
         if status == 'any':
             return True
         elif status == 'active':
-            return not mutation.todo_edge.node.complete
+            return not message['todo']['complete']
         elif status == 'completed':
-            return mutation.todo_edge.node.complete
+            return message['todo']['complete']
         else:
             assert 0, 'invalid status %s' % status
 
     @classmethod
-    def get_payload_from_mutation(cls, mutation, status):
-        include_edge = cls.filter_by_status(mutation, status)
+    def get_payload_from_message(cls, message, status):
+        viewer = UserModel.query.get(message['viewer']['id'])
+        include_edge = cls.filter_by_status(message, status)
         if include_edge:
-            return AddTodoSubscription(todo_edge=mutation.todo_edge, viewer=mutation.viewer)
+            todo = TodoModel.query.get(message['todo']['id'])
+            edge = TodoConnection.Edge(
+                node=todo,
+                cursor=message['cursor'],
+            )
+            return AddTodoSubscription(todo_edge=edge, viewer=viewer)
         else:
-            return AddTodoSubscription(viewer=mutation.viewer)
+            return AddTodoSubscription(viewer=viewer)
 
     @classmethod
     def subscribe_and_get_payload(cls, root, info, **input):
         status = input.get('status')
         return pubsub.subscribe_to_channel('ADD_TODO')\
-            .map(lambda mutation: cls.get_payload_from_mutation(mutation, status))
+            .map(lambda message: cls.get_payload_from_message(message, status))
 
 
 class ChangeTodoStatusSubscription(relay_helper.ClientIDSubscription):
@@ -341,7 +351,9 @@ class ChangeTodoStatusSubscription(relay_helper.ClientIDSubscription):
 
     @classmethod
     def get_payload_from_message(cls, message):
-        return ChangeTodoStatusSubscription(todo=TodoModel.query.get(message['todo']['id']), viewer=UserModel.query.get(message['viewer']['id']))
+        todo = TodoModel.query.get(message['todo']['id'])
+        viewer = UserModel.query.get(message['viewer']['id'])
+        return ChangeTodoStatusSubscription(todo=todo, viewer=viewer)
 
     @classmethod
     def subscribe_and_get_payload(cls, root, info, **input):
@@ -358,19 +370,19 @@ class InsertTodoSubscription(relay_helper.ClientIDSubscription):
         status = graphene.String(required=True)
 
     @classmethod
-    def filter_by_status(cls, mutation, status):
+    def filter_by_status(cls, message, status):
         # We only want to publish to subscription with the correct status
         if status == 'active':
-            return not mutation.todo.complete
+            return not message['todo']['complete']
         elif status == 'completed':
-            return mutation.todo.complete
+            return message['todo']['complete']
         else:
             return False
 
     @classmethod
-    def get_payload_from_mutation(cls, mutation, status):
-        todo = mutation.todo
-        viewer = mutation.viewer
+    def get_payload_from_message(cls, message, status):
+        todo = TodoModel.query.get(message['todo']['id'])
+        viewer = UserModel.query.get(message['viewer']['id'])
         if status == 'active':
             cursor = graphql_relay.connection.arrayconnection.cursor_for_object_in_connection(viewer.todos.filter(TodoModel.complete == False).all(), todo)
         elif status == 'completed':
@@ -387,8 +399,8 @@ class InsertTodoSubscription(relay_helper.ClientIDSubscription):
     def subscribe_and_get_payload(cls, root, info, **input):
         status = input.get('status')
         return pubsub.subscribe_to_channel('INSERT_TODO')\
-            .filter(lambda mutation: cls.filter_by_status(mutation, status))\
-            .map(lambda mutation: cls.get_payload_from_mutation(mutation, status))
+            .filter(lambda message: cls.filter_by_status(message, status))\
+            .map(lambda message: cls.get_payload_from_message(message, status))
 
 
 class RemoveTodoSubscription(relay_helper.ClientIDSubscription):
@@ -396,18 +408,28 @@ class RemoveTodoSubscription(relay_helper.ClientIDSubscription):
     viewer = graphene.Field(User)
 
     @classmethod
+    def get_payload_from_message(cls, message):
+        viewer = UserModel.query.get(message['viewer']['id'])
+        return RemoveTodoSubscription(deleted_todo_id=message['deleted_todo_id'], viewer=viewer)
+
+    @classmethod
     def subscribe_and_get_payload(cls, root, info, **input):
         return pubsub.subscribe_to_channel('REMOVE_TODO')\
-            .map(lambda mutation: RemoveTodoSubscription(deleted_todo_id=mutation.deleted_todo_id, viewer=mutation.viewer))
+            .map(lambda message: cls.get_payload_from_message(message))
 
 
 class RenameTodoSubscription(relay_helper.ClientIDSubscription):
     todo = graphene.Field(Todo)
 
     @classmethod
+    def get_payload_from_message(cls, message):
+        todo = TodoModel.query.get(message['todo']['id'])
+        return RenameTodoSubscription(todo=todo)
+
+    @classmethod
     def subscribe_and_get_payload(cls, root, info, **input):
         return pubsub.subscribe_to_channel('RENAME_TODO')\
-            .map(lambda mutation: RenameTodoSubscription(todo=mutation.todo))
+            .map(lambda message: cls.get_payload_from_message(message))
 
 
 class Subscription(graphene.ObjectType):
