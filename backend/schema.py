@@ -31,12 +31,35 @@ import graphql_relay
 from pubsub import GeventRxRedisPubsub
 import relay_helper
 
+import time
+import eventlet
+
+# from threading import Thread
+from datetime import datetime, timedelta
+
 pubsub = GeventRxRedisPubsub()
 
 # Uncomment these to show sql queries
-#import logging
-#logging.basicConfig()
-#logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
+# import logging
+# logging.basicConfig()
+# logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
+
+def changeStatus(id,viewer,message):
+    time.sleep(3)
+    print(message)
+    id = graphql_relay.to_global_id('Todo', message['todo']['id'])
+    try:
+        typ, pk = graphql_relay.from_global_id(id) # may raise if improperly encoded
+        assert typ == 'Todo', 'changeTodoStatus called with type {}'.format(typ)
+        todo = TodoModel.query.get(pk)
+    except:
+        raise Exception("received invalid Todo id '{}'".format(id))
+
+    todo.complete = True
+    db_session.commit()
+    message = {'todo': todo.__json__(), 'viewer': viewer.__json__()}
+    pubsub.publish('CHANGE_TODO_STATUS', (id, message))
+    pubsub.publish('INSERT_TODO', message)  # we might need to insert into some views
 
 class Todo(SQLAlchemyObjectType):
     class Meta:
@@ -93,8 +116,6 @@ class Query(graphene.ObjectType):
     all_users = SQLAlchemyConnectionField(User.connection)
     all_todos = SQLAlchemyConnectionField(TodoConnection)
 
-
-
 class AddTodo(relay.ClientIDMutation):
     # mutation AddTodoMutation($input: AddTodoInput!) {
     #   addTodo(input: $input) {
@@ -125,6 +146,8 @@ class AddTodo(relay.ClientIDMutation):
         message = {'todo': todo.__json__(), 'viewer': viewer.__json__(), 'cursor': edge.cursor}
         pubsub.publish('ADD_TODO', message)
         mutation = AddTodo(todo_edge=edge, viewer=viewer)
+
+        job = pubsub.q.enqueue(changeStatus,id=todo.id,viewer=viewer,message=message)
         return mutation
 
 

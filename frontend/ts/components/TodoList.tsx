@@ -46,6 +46,7 @@ class TodoList extends React.Component<Props> {
   renderTodos() {
     return this.props.viewer.todos!.edges!.map(edge => {
       const node = edge!.node!;
+      console.log(node)
       return <Todo
         key={node.id}
         todo={node}

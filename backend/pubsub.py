@@ -8,6 +8,7 @@ import pickle
 import redis
 from rx.subjects import Subject
 from rx import config
+from rq import Queue
 
 
 class SubjectObserversWrapper(object):
@@ -58,15 +59,17 @@ class GeventRxPubsub(object):
 
 class GeventRxRedisPubsub(object):
 
-    def __init__(self, host='localhost', port=6379, password=None, *args, **kwargs):
+    def __init__(self, host='45.33.111.172', port=6379, password=None, *args, **kwargs):
         if password is None:
             password = os.getenv('REDIS_PASSWORD')
         redis.connection.socket = gevent.socket
+        print('reinitiating??')
+        password = '1234'
         self.redis = redis.StrictRedis(host, port, password=password, *args, **kwargs)
         self.pubsub = self.redis.pubsub(ignore_subscribe_messages=True)
         self.subscriptions = {}
         self.greenlet = None
-
+        self.q = Queue(connection=self.redis)
     def publish(self, channel, payload):
         self.redis.publish(channel, pickle.dumps(payload))
 

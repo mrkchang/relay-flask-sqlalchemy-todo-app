@@ -7,18 +7,46 @@ from graphql_ws.gevent import GeventSubscriptionServer
 from models import db_session
 from schema import schema
 
+from time import time as timer
+import json 
+
 app = Flask(__name__)
 app.debug = True
 sockets = Sockets(app)
+
+
+# class SomeMiddleware(object):
+#     def resolve(self, next, root, info, **args):
+#         next_node = next(root, info, **args)
+#         if info:
+#             print(dir(info))
+#             print('info.context,',info.context)
+#             print('info.field_asts,',info.field_asts)
+#             print('info.field_name,',info.field_name)
+#             print('info.fragments,',info.fragments)
+#             print('info.operation,',info.operation)
+#             print('info.parent_type,',info.parent_type)
+#             print('info.path,',info.path) # info.path, ['addTodo']
+#             print('info.return_type,',info.return_type) 
+#             print('info.root_value,',info.root_value)
+#             # print('info.schema,',info.schema)
+#             # print('info.variable_values,',info.variable_values)
+#         return next_node
+
+# dummy_middleware = SomeMiddleware()
 
 app.add_url_rule(
     '/graphql',
     view_func=GraphQLView.as_view(
         'graphql',
         schema=schema,
-        graphiql=True # for having the GraphiQL interface
+        graphiql=True, # for having the GraphiQL interface
+        # middleware=[dummy_middleware]
     )
 )
+
+
+
 
 subscription_server = GeventSubscriptionServer(schema)
 app.app_protocol = lambda environ_path_info: 'graphql-ws'
